@@ -1,258 +1,276 @@
 #!/usr/bin/env python3
-"""Quantitative Trading System - Main Entry Point.
+"""Quantitative Trading System — CLI entry point.
 
 Usage:
-    python main.py --symbol AAPL --strategy ma_cross --start 2022-01-01 --end 2023-12-31
-    python main.py --symbol AAPL --strategy mean_reversion --capital 200000
-    python main.py --symbol TSLA --strategy momentum --source simulated
-
-For more options, see --help.
+    python3 main.py backtest --symbol AAPL --strategy ma_crossover --start 2023-01-01 --end 2024-12-31 --capital 100000
+    python3 main.py simulate --symbol AAPL --strategy momentum_breakout --days 60 --capital 100000
 """
 
 import argparse
-import json
-import os
+import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import matplotlib
+matplotlib.use('Agg')
 
-from config.settings import Config, config as default_config
-from data.fetcher import DataFetcher
-from data.processor import clean_data, add_indicators
-from strategy import MACrossStrategy, MeanReversionStrategy, MomentumStrategy
-from backtest import BacktestEngine, Analyzer
-from risk import RiskManager
+from config import DEFAULT_SYMBOL, DEFAULT_CAPITAL, DEFAULT_START_DATE, DEFAULT_END_DATE
 
-
-STRATEGY_MAP = {
-    'ma_cross': MACrossStrategy,
-    'mean_reversion': MeanReversionStrategy,
-    'momentum': MomentumStrategy,
-}
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("main")
 
 
-def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description='Quantitative Trading System - Backtest Runner',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python main.py --symbol AAPL --strategy ma_cross --start 2022-01-01 --end 2023-12-31
-  python main.py --symbol AAPL,GOOGL --strategy momentum --capital 500000
-  python main.py --symbol TSLA --strategy mean_reversion --source simulated
-        """,
-    )
-
-    parser.add_argument(
-        '--symbol', type=str, default='AAPL',
-        help='Stock symbol(s), comma-separated (default: AAPL)',
-    )
-    parser.add_argument(
-        '--strategy', type=str, default='ma_cross',
-        choices=['ma_cross', 'mean_reversion', 'momentum'],
-        help='Trading strategy to use (default: ma_cross)',
-    )
-    parser.add_argument(
-        '--start', type=str, default='2022-01-01',
-        help='Backtest start date YYYY-MM-DD (default: 2022-01-01)',
-    )
-    parser.add_argument(
-        '--end', type=str, default='2023-12-31',
-        help='Backtest end date YYYY-MM-DD (default: 2023-12-31)',
-    )
-    parser.add_argument(
-        '--capital', type=float, default=100_000.0,
-        help='Initial capital in USD (default: 100000)',
-    )
-    parser.add_argument(
-        '--source', type=str, default='yfinance',
-        choices=['yfinance', 'simulated'],
-        help='Data source (default: yfinance)',
-    )
-    parser.add_argument(
-        '--output', type=str, default='./output',
-        help='Output directory for charts and reports (default: ./output)',
-    )
-    parser.add_argument(
-        '--short-window', type=int, default=5,
-        help='Short MA window for ma_cross strategy (default: 5)',
-    )
-    parser.add_argument(
-        '--long-window', type=int, default=20,
-        help='Long MA window for ma_cross strategy (default: 20)',
-    )
-    parser.add_argument(
-        '--bb-period', type=int, default=20,
-        help='Bollinger Band period for mean_reversion (default: 20)',
-    )
-    parser.add_argument(
-        '--bb-std', type=float, default=2.0,
-        help='Bollinger Band std multiplier (default: 2.0)',
-    )
-    parser.add_argument(
-        '--lookback', type=int, default=20,
-        help='Lookback period for momentum strategy (default: 20)',
-    )
-    parser.add_argument(
-        '--threshold', type=float, default=0.02,
-        help='Momentum threshold (default: 0.02)',
-    )
-    parser.add_argument(
-        '--no-risk', action='store_true',
-        help='Disable risk management',
-    )
-    parser.add_argument(
-        '--commission', type=float, default=0.0003,
-        help='Commission rate (default: 0.0003 = 0.03%%)',
-    )
-    parser.add_argument(
-        '--slippage', type=float, default=0.0001,
-        help='Slippage rate (default: 0.0001 = 0.01%%)',
-    )
-
-    return parser.parse_args()
-
-
-def create_strategy(args):
-    """Create strategy instance from CLI args.
-
-    Args:
-        args: Parsed argparse namespace.
-
-    Returns:
-        Strategy instance.
-
-    Raises:
-        ValueError: If strategy name is unknown.
-    """
-    strategy_name = args.strategy
-    strategy_cls = STRATEGY_MAP[strategy_name]
-
-    if strategy_name == 'ma_cross':
-        return strategy_cls(short_window=args.short_window, long_window=args.long_window)
-    elif strategy_name == 'mean_reversion':
-        return strategy_cls(bb_period=args.bb_period, bb_std=args.bb_std)
-    elif strategy_name == 'momentum':
-        return strategy_cls(lookback=args.lookback, threshold=args.threshold)
+def get_strategy(name: str):
+    """Get strategy class by name."""
+    if name == "ma_crossover":
+        from strategy.ma_crossover import MACrossoverStrategy
+        return MACrossoverStrategy()
+    elif name == "momentum_breakout":
+        from strategy.momentum_breakout import MomentumBreakoutStrategy
+        return MomentumBreakoutStrategy()
     else:
-        raise ValueError(f"Unknown strategy: {strategy_name}")
+        raise ValueError(
+            f"Unknown strategy: {name}. "
+            "Choose 'ma_crossover' or 'momentum_breakout'."
+        )
+
+
+def cmd_backtest(args):
+    """Run a backtest over a historical period."""
+    print(f"\n{'='*60}")
+    print(f"  BACKTEST MODE")
+    print(f"{'='*60}")
+    print(f"  Symbol:    {args.symbol}")
+    print(f"  Strategy:  {args.strategy}")
+    print(f"  Period:    {args.start} to {args.end}")
+    print(f"  Capital:   ${args.capital:,.0f}")
+    print(f"{'='*60}\n")
+
+    # 1. Fetch data
+    from data.fetcher import DataFetcher
+    fetcher = DataFetcher()
+    logger.info(f"Fetching data for {args.symbol}...")
+    data = fetcher.fetch(args.symbol, args.start, args.end)
+    if data.empty:
+        print("ERROR: No data fetched. Check symbol and date range.")
+        sys.exit(1)
+    print(f"  Fetched {len(data)} rows of OHLCV data")
+
+    # 2. Generate signals
+    strategy = get_strategy(args.strategy)
+    signals = strategy.generate_signals(data)
+    buy_count = (signals['Signal'] == 1).sum()
+    sell_count = (signals['Signal'] == -1).sum()
+    print(f"  Signals: {buy_count} buy, {sell_count} sell")
+
+    # 3. Run backtest
+    from backtest.engine import BacktestEngine
+    engine = BacktestEngine(initial_capital=args.capital)
+    result = engine.run(data, signals, capital=args.capital)
+    print(f"  Trades executed: {len(result['trades'])}")
+    if result['trades']:
+        total_pnl = sum(t['profit_loss'] for t in result['trades'])
+        print(f"  Total P&L: ${total_pnl:,.2f}")
+    print(f"  Final equity: ${result['final_equity']:,.2f}")
+
+    # 4. Analyze performance
+    from backtest.analyzer import PerformanceAnalyzer
+    analyzer = PerformanceAnalyzer(result)
+    metrics = analyzer.analyze()
+    print(analyzer.report())
+
+    # 5. Generate report (console + charts + HTML)
+    from backtest.reporter import ReportGenerator
+    reporter = ReportGenerator()
+    report_path = reporter.generate(
+        equity_curve=result['equity_curve'],
+        metrics=metrics,
+        trades=result['trades'],
+        strategy_name=args.strategy,
+        symbol=args.symbol,
+    )
+    print(f"\n  Report saved to: {report_path}")
+    print(f"{'='*60}\n")
+
+
+def cmd_simulate(args):
+    """Run a live-like simulation day-by-day."""
+    print(f"\n{'='*60}")
+    print(f"  SIMULATE MODE")
+    print(f"{'='*60}")
+    print(f"  Symbol:    {args.symbol}")
+    print(f"  Strategy:  {args.strategy}")
+    print(f"  Days:      {args.days}")
+    print(f"  Capital:   ${args.capital:,.0f}")
+    print(f"{'='*60}\n")
+
+    # 1. Fetch recent data (simulated since we can't rely on live data)
+    from data.fetcher import DataFetcher
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=args.days + 60)).strftime("%Y-%m-%d")
+
+    fetcher = DataFetcher()
+    logger.info(f"Fetching data for {args.symbol} from {start_date} to {end_date}...")
+    data = fetcher.fetch(args.symbol, start_date, end_date, source="simulated")
+    if data.empty:
+        print("ERROR: No data fetched.")
+        sys.exit(1)
+    print(f"  Fetched {len(data)} rows of OHLCV data")
+
+    # 2. Generate signals for the full period
+    strategy = get_strategy(args.strategy)
+    signals = strategy.generate_signals(data)
+
+    # 3. Set up portfolio, broker, and logger
+    from executor.portfolio import Portfolio
+    from executor.broker import Broker, OrderSide
+    from executor.logger import TradeLogger
+
+    portfolio = Portfolio(initial_cash=args.capital)
+    broker = Broker()
+    logger_trade = TradeLogger()
+
+    # 4. Run day-by-day simulation (only last N days)
+    simulation_data = data.iloc[-args.days:] if len(data) > args.days else data
+    simulation_signals = signals.loc[simulation_data.index]
+
+    print(f"  Simulating {len(simulation_data)} days...")
+
+    trades_executed = 0
+    last_price = float(simulation_data.iloc[-1]['Close'])
+    for date in simulation_data.index:
+        price = float(simulation_data.loc[date, 'Close'])
+        signal = int(simulation_signals.loc[date, 'Signal'])
+
+        # Update prices
+        portfolio.update_prices({args.symbol: price})
+
+        # Execute pending orders first
+        broker.execute_pending_orders({args.symbol: price}, date=date)
+
+        # Act on signals
+        if signal == 1 and portfolio.get_position(args.symbol) is None:
+            # Buy: use 80% of cash
+            max_capital = portfolio.cash * 0.80
+            shares = int(max_capital / price)
+            if shares > 0:
+                try:
+                    portfolio.buy(args.symbol, shares, price, date=date)
+                    broker.place_market_order(args.symbol, OrderSide.BUY, shares)
+                    logger_trade.log_trade({
+                        'action': 'BUY', 'symbol': args.symbol,
+                        'shares': shares, 'price': price, 'date': str(date),
+                    })
+                    trades_executed += 1
+                except ValueError as e:
+                    logger.warning(f"Buy failed on {date.date()}: {e}")
+
+        elif signal == -1 and portfolio.get_position(args.symbol) is not None:
+            pos = portfolio.get_position(args.symbol)
+            try:
+                portfolio.sell(args.symbol, pos.shares, price, date=date)
+                broker.place_market_order(args.symbol, OrderSide.SELL, pos.shares)
+                logger_trade.log_trade({
+                    'action': 'SELL', 'symbol': args.symbol,
+                    'shares': pos.shares, 'price': price, 'date': str(date),
+                })
+                trades_executed += 1
+            except ValueError as e:
+                logger.warning(f"Sell failed on {date.date()}: {e}")
+
+        # Log portfolio snapshot weekly
+        if date.dayofweek == 4:  # Friday
+            logger_trade.log_portfolio_snapshot(portfolio, date=date)
+
+    # 5. Print summary
+    equity = portfolio.get_equity({args.symbol: last_price})
+    total_return = (equity / args.capital - 1) * 100
+    positions = portfolio.position_count
+
+    print(f"\n{'='*60}")
+    print(f"  SIMULATION SUMMARY")
+    print(f"{'='*60}")
+    print(f"  Initial capital:     ${args.capital:>12,.2f}")
+    print(f"  Final equity:        ${equity:>12,.2f}")
+    print(f"  Total return:        {total_return:>11.2f}%")
+    print(f"  Open positions:      {positions:>11}")
+    print(f"  Trades executed:     {trades_executed:>11}")
+    print(f"  Trade log:           {logger_trade.get_log_path()}")
+    print(f"{'='*60}\n")
 
 
 def main():
-    """Main execution flow."""
-    args = parse_args()
-
-    print("=" * 60)
-    print("  QUANTITATIVE TRADING SYSTEM")
-    print("=" * 60)
-    print(f"  Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  Strategy:   {args.strategy}")
-    print(f"  Symbols:    {args.symbol}")
-    print(f"  Period:     {args.start} to {args.end}")
-    print(f"  Capital:    ${args.capital:,.0f}")
-    print(f"  Data:       {args.source}")
-    print("-" * 60)
-
-    # Configure
-    config = Config(
-        INITIAL_CAPITAL=args.capital,
-        COMMISSION_RATE=args.commission,
-        SLIPPAGE=args.slippage,
+    parser = argparse.ArgumentParser(
+        description="Quantitative Trading System -- Backtest and simulate strategies.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python3 main.py backtest --symbol AAPL --strategy ma_crossover --start 2023-01-01 --end 2024-12-31
+  python3 main.py simulate --symbol AAPL --strategy momentum_breakout --days 60 --capital 100000
+        """,
     )
 
-    # Parse symbols
-    symbols = [s.strip() for s in args.symbol.split(',')]
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # Fetch data
-    print("\n[1/5] Fetching data...")
-    fetcher = DataFetcher()
-    data_dict = {}
-    for symbol in symbols:
-        try:
-            df = fetcher.fetch(symbol, args.start, args.end)
-            data_dict[symbol] = df
-        except Exception as e:
-            print(f"  ERROR fetching {symbol}: {e}, using simulated data")
-            data_dict[symbol] = fetcher.fetch(symbol, args.start, args.end)
+    # Backtest subcommand
+    backtest_parser = subparsers.add_parser("backtest", help="Run a historical backtest")
+    backtest_parser.add_argument(
+        "--symbol", type=str, default=DEFAULT_SYMBOL,
+        help=f"Ticker symbol (default: {DEFAULT_SYMBOL})",
+    )
+    backtest_parser.add_argument(
+        "--strategy", type=str, default="ma_crossover",
+        choices=["ma_crossover", "momentum_breakout"],
+        help="Trading strategy (default: ma_crossover)",
+    )
+    backtest_parser.add_argument(
+        "--start", type=str, default=DEFAULT_START_DATE,
+        help=f"Start date YYYY-MM-DD (default: {DEFAULT_START_DATE})",
+    )
+    backtest_parser.add_argument(
+        "--end", type=str, default=DEFAULT_END_DATE,
+        help=f"End date YYYY-MM-DD (default: {DEFAULT_END_DATE})",
+    )
+    backtest_parser.add_argument(
+        "--capital", type=float, default=DEFAULT_CAPITAL,
+        help=f"Initial capital (default: {DEFAULT_CAPITAL:,.0f})",
+    )
 
-    # Process data
-    print("[2/5] Processing data and computing indicators...")
-    for symbol in data_dict:
-        data_dict[symbol] = clean_data(data_dict[symbol])
-        data_dict[symbol] = add_indicators(data_dict[symbol])
-        print(f"  {symbol}: {len(data_dict[symbol])} bars, "
-              f"{data_dict[symbol].index[0].date()} to {data_dict[symbol].index[-1].date()}")
+    # Simulate subcommand
+    simulate_parser = subparsers.add_parser("simulate", help="Run a live-like simulation")
+    simulate_parser.add_argument(
+        "--symbol", type=str, default=DEFAULT_SYMBOL,
+        help=f"Ticker symbol (default: {DEFAULT_SYMBOL})",
+    )
+    simulate_parser.add_argument(
+        "--strategy", type=str, default="momentum_breakout",
+        choices=["ma_crossover", "momentum_breakout"],
+        help="Trading strategy (default: momentum_breakout)",
+    )
+    simulate_parser.add_argument(
+        "--days", type=int, default=60,
+        help="Number of days to simulate (default: 60)",
+    )
+    simulate_parser.add_argument(
+        "--capital", type=float, default=DEFAULT_CAPITAL,
+        help=f"Initial capital (default: {DEFAULT_CAPITAL:,.0f})",
+    )
 
-    # Create strategy
-    print("[3/5] Initializing strategy...")
-    strategy = create_strategy(args)
-    print(f"  Strategy: {strategy}")
+    args = parser.parse_args()
 
-    # Create risk manager
-    risk_manager = None if args.no_risk else RiskManager(config)
-    if risk_manager:
-        print("  Risk Management: ENABLED")
+    if args.command == "backtest":
+        cmd_backtest(args)
+    elif args.command == "simulate":
+        cmd_simulate(args)
     else:
-        print("  Risk Management: DISABLED")
-
-    # Run backtest
-    print("[4/5] Running backtest...")
-    engine = BacktestEngine(config=config)
-
-    primary_symbol = symbols[0]
-    data = data_dict[primary_symbol]
-
-    result = engine.run(
-        data=data,
-        strategy=strategy,
-        symbol=primary_symbol,
-        risk_manager=risk_manager,
-    )
-
-    print(f"  Completed: {len(result['trades'])} trades executed")
-
-    # Analyze results
-    print("[5/5] Analyzing performance...")
-    analyzer = Analyzer(result)
-
-    # Print report
-    print()
-    print(analyzer.report())
-
-    # Generate charts
-    print(f"\nGenerating charts in {args.output}/...")
-    analyzer.plot(save_dir=args.output)
-    print(f"  Charts saved to {args.output}/")
-
-    # Save trade log
-    os.makedirs(args.output, exist_ok=True)
-    trade_log_path = os.path.join(args.output, 'trades.json')
-
-    trades_serializable = []
-    for t in result['trades']:
-        t_copy = t.copy()
-        t_copy['date'] = str(t_copy['date'])
-        trades_serializable.append(t_copy)
-
-    with open(trade_log_path, 'w') as f:
-        json.dump(trades_serializable, f, indent=2, default=str)
-    print(f"  Trade log saved to {trade_log_path}")
-
-    # Summary
-    final_equity = result['equity_curve'].iloc[-1]
-    total_return = (final_equity / config.INITIAL_CAPITAL) - 1
-    print(f"\n{'=' * 60}")
-    print(f"  Backtest Complete!")
-    print(f"  Initial Capital:  ${config.INITIAL_CAPITAL:>12,.2f}")
-    print(f"  Final Equity:     ${final_equity:>12,.2f}")
-    print(f"  Total Return:     {total_return:>12.2%}")
-    print(f"{'=' * 60}")
-
-    return 0
+        parser.print_help()
+        sys.exit(1)
 
 
-if __name__ == '__main__':
-    sys.exit(main())
+if __name__ == "__main__":
+    main()

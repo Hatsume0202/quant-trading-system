@@ -1,0 +1,6 @@
+{"timestamp": "2026-07-01T18:50:39.123187", "event": "SNAPSHOT", "date": "2026-05-22 00:00:00", "cash": 100000.0, "equity": 100000.0, "total_return": 0.0, "positions": {}}
+{"timestamp": "2026-07-01T18:50:39.123461", "event": "SNAPSHOT", "date": "2026-05-29 00:00:00", "cash": 100000.0, "equity": 100000.0, "total_return": 0.0, "positions": {}}
+{"timestamp": "2026-07-01T18:50:39.123633", "event": "SNAPSHOT", "date": "2026-06-05 00:00:00", "cash": 100000.0, "equity": 100000.0, "total_return": 0.0, "positions": {}}
+{"timestamp": "2026-07-01T18:50:39.123800", "event": "SNAPSHOT", "date": "2026-06-12 00:00:00", "cash": 100000.0, "equity": 100000.0, "total_return": 0.0, "positions": {}}
+{"timestamp": "2026-07-01T18:50:39.123963", "event": "SNAPSHOT", "date": "2026-06-19 00:00:00", "cash": 100000.0, "equity": 100000.0, "total_return": 0.0, "positions": {}}
+{"timestamp": "2026-07-01T18:50:39.124125", "event": "SNAPSHOT", "date": "2026-06-26 00:00:00", "cash": 100000.0, "equity": 100000.0, "total_return": 0.0, "positions": {}}

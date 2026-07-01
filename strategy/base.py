@@ -15,14 +15,18 @@ class BaseStrategy(ABC):
     with a 'signal' column: 1 = buy/long, -1 = sell/short, 0 = hold/no action.
     """
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
+    def __init__(self, params: Optional[Dict[str, Any]] = None, **kwargs):
         """Initialize strategy with optional parameter overrides.
 
         Args:
             params: Dictionary of parameter overrides. If None, uses config defaults.
+            **kwargs: Additional parameters stored in self.params.
         """
         self.name: str = self.__class__.__name__
-        self.params: Dict[str, Any] = params or {}
+        if params is not None:
+            self.params: Dict[str, Any] = params
+        else:
+            self.params: Dict[str, Any] = dict(kwargs)
         logger.info(f"Initialized {self.name} with params: {self.params}")
 
     @abstractmethod

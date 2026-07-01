@@ -228,14 +228,28 @@ class ReportGenerator:
                 "",
                 "## Trade List",
                 "",
-                "| Date | Symbol | Direction | Price | Shares | P&L |",
-                "|------|--------|-----------|-------|--------|-----|",
+                "| Entry Date | Exit Date | Type | Entry Price | Exit Price | Shares | P&L |",
+                "|------------|-----------|------|-------------|------------|--------|-----|",
             ])
             for t in trades[-20:]:  # Last 20 trades
-                lines.append(
-                    f"| {t.timestamp.date()} | {t.symbol} | {t.direction} | "
-                    f"${t.price:.2f} | {t.shares} | ${t.pnl:,.2f} |"
-                )
+                if isinstance(t, dict):
+                    entry_date = t.get('entry_date', '')
+                    if hasattr(entry_date, 'date'):
+                        entry_date = entry_date.date()
+                    exit_date = t.get('exit_date', '')
+                    if hasattr(exit_date, 'date'):
+                        exit_date = exit_date.date()
+                    lines.append(
+                        f"| {entry_date} | {t.get('type', 'long')} | "
+                        f"entry ${t.get('entry_price', 0):.2f} | "
+                        f"exit ${t.get('exit_price', 0):.2f} | "
+                        f"{t.get('shares', 0)} | ${t.get('profit_loss', 0):,.2f} |"
+                    )
+                else:
+                    lines.append(
+                        f"| {t.timestamp.date()} | {t.symbol} | {t.direction} | "
+                        f"${t.price:.2f} | {t.shares} | ${t.pnl:,.2f} |"
+                    )
             if len(trades) > 20:
                 lines.append(f"| ... | ... | ... | ... | ... | ... |")
                 lines.append(f"| *Showing last 20 of {len(trades)} trades* | | | | | |")

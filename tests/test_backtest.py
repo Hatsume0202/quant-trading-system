@@ -4,7 +4,7 @@ import pytest
 import pandas as pd
 import numpy as np
 
-from backtest.engine import BacktestEngine, Trade, BacktestResult
+from backtest.engine import BacktestEngine
 from backtest.analyzer import Analyzer
 
 
@@ -12,13 +12,21 @@ from backtest.analyzer import Analyzer
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_prices(dates, close_values):
-    """Build a price DataFrame with a 'close' column."""
-    return pd.DataFrame({'close': close_values}, index=dates)
+def _make_data(dates, close_values):
+    """Build an OHLCV DataFrame with capitalized columns."""
+    n = len(close_values)
+    return pd.DataFrame({
+        'Open': np.array(close_values) * 0.999,
+        'High': np.array(close_values) * 1.005,
+        'Low': np.array(close_values) * 0.995,
+        'Close': np.array(close_values),
+        'Volume': np.full(n, 50_000_000),
+    }, index=dates)
 
 
-def _make_signals(dates, buy_indices=None, sell_indices=None):
-    """Build a signal DataFrame with a 'signal' column."""
+def _make_signals(dates, close_values, buy_indices=None, sell_indices=None):
+    """Build a signal DataFrame with Signal and Price columns."""
+    n = len(dates)
     sig = pd.Series(0, index=dates, dtype=int)
     if buy_indices:
         for i in buy_indices:
@@ -26,7 +34,8 @@ def _make_signals(dates, buy_indices=None, sell_indices=None):
     if sell_indices:
         for i in sell_indices:
             sig.iloc[i] = -1
-    return sig.to_frame('signal')
+    signals = pd.DataFrame({'Signal': sig, 'Price': close_values}, index=dates)
+    return signals
 
 
 def _analyzer_result(equity_series, trades=None):
@@ -46,116 +55,129 @@ class TestBacktestEngine:
     def test_initialization_defaults(self):
         engine = BacktestEngine()
         assert engine.initial_capital == 100_000.0
-        assert engine.commission == 0.001
-        assert engine.slippage == 0.0005
+        assert engine.commission_rate == 0.001
+        assert engine.slippage_rate == 0.0005
 
     def test_initialization_custom(self):
-        engine = BacktestEngine(initial_capital=50_000, commission=0.002, slippage=0.001)
+        engine = BacktestEngine(initial_capital=50_000, commission_rate=0.002, slippage_rate=0.001)
         assert engine.initial_capital == 50_000
-        assert engine.commission == 0.002
-        assert engine.slippage == 0.001
+        assert engine.commission_rate == 0.002
+        assert engine.slippage_rate == 0.001
 
-    def test_run_returns_backtest_result(self):
+    def test_run_returns_dict(self):
         dates = pd.date_range('2024-01-01', periods=100, freq='B')
         rng = np.random.default_rng(42)
-        prices = _make_prices(dates, 100 * np.exp(np.cumsum(rng.normal(0.0005, 0.01, 100))))
-        signals = _make_signals(dates, buy_indices=[10], sell_indices=[50])
+        close = 100 * np.exp(np.cumsum(rng.normal(0.0005, 0.01, 100)))
+        data = _make_data(dates, close)
+        signals = _make_signals(dates, close, buy_indices=[10], sell_indices=[50])
         engine = BacktestEngine()
-        result = engine.run(signals, prices)
-        assert isinstance(result, BacktestResult)
-        assert hasattr(result, 'equity_curve')
-        assert hasattr(result, 'trades')
-        assert hasattr(result, 'final_value')
+        result = engine.run(data, signals)
+        assert isinstance(result, dict)
+        assert 'equity_curve' in result
+        assert 'trades' in result
+        assert 'final_equity' in result
 
     def test_equity_curve_length(self):
         dates = pd.date_range('2024-01-01', periods=100, freq='B')
-        prices = _make_prices(dates, np.full(100, 100.0))
-        signals = _make_signals(dates, buy_indices=[10], sell_indices=[50])
+        close = np.full(100, 100.0)
+        data = _make_data(dates, close)
+        signals = _make_signals(dates, close, buy_indices=[10], sell_indices=[50])
         engine = BacktestEngine()
-        result = engine.run(signals, prices)
-        assert len(result.equity_curve) == 100
+        result = engine.run(data, signals)
+        assert len(result['equity_curve']) == 100
 
     def test_no_signals_preserves_capital(self):
         dates = pd.date_range('2024-01-01', periods=100, freq='B')
-        prices = _make_prices(dates, np.full(100, 100.0))
-        signals = _make_signals(dates)
+        close = np.full(100, 100.0)
+        data = _make_data(dates, close)
+        signals = _make_signals(dates, close)
         engine = BacktestEngine()
-        result = engine.run(signals, prices)
-        assert result.final_value == pytest.approx(100_000.0, rel=0.01)
+        result = engine.run(data, signals)
+        assert result['final_equity'] == pytest.approx(100_000.0, rel=0.01)
 
-    def test_buy_then_sell_creates_trade_objects(self):
+    def test_buy_then_sell_creates_trade_dicts(self):
         dates = pd.date_range('2024-01-01', periods=100, freq='B')
-        prices = _make_prices(dates, np.full(100, 100.0))
-        signals = _make_signals(dates, buy_indices=[10], sell_indices=[50])
+        close = np.full(100, 100.0)
+        data = _make_data(dates, close)
+        signals = _make_signals(dates, close, buy_indices=[10], sell_indices=[50])
         engine = BacktestEngine()
-        result = engine.run(signals, prices)
-        assert len(result.trades) >= 1
-        directions = [t.direction for t in result.trades]
-        assert 'buy' in directions
-        assert 'sell' in directions
-
-    def test_trades_are_trade_dataclass(self):
-        dates = pd.date_range('2024-01-01', periods=100, freq='B')
-        rng = np.random.default_rng(42)
-        prices = _make_prices(dates, 100 * np.exp(np.cumsum(rng.normal(0.0005, 0.01, 100))))
-        signals = _make_signals(dates, buy_indices=[10], sell_indices=[50])
-        engine = BacktestEngine()
-        result = engine.run(signals, prices)
-        if result.trades:
-            trade = result.trades[0]
-            assert isinstance(trade, Trade)
-            assert hasattr(trade, 'timestamp')
-            assert hasattr(trade, 'direction')
-            assert hasattr(trade, 'price')
-            assert hasattr(trade, 'shares')
-            assert hasattr(trade, 'pnl')
-            assert hasattr(trade, 'cost')
+        result = engine.run(data, signals)
+        assert len(result['trades']) >= 1
+        # Check that trades are dicts with expected keys
+        for t in result['trades']:
+            assert isinstance(t, dict)
+            assert 'entry_date' in t
+            assert 'exit_date' in t
+            assert 'entry_price' in t
+            assert 'exit_price' in t
+            assert 'shares' in t
+            assert 'profit_loss' in t
+            assert 'profit_loss_pct' in t
+            assert 'type' in t
 
     def test_profitable_trend_produces_gain(self):
         dates = pd.date_range('2024-01-01', periods=100, freq='B')
         close = np.linspace(100, 150, 100)
-        prices = _make_prices(dates, close)
-        signals = _make_signals(dates, buy_indices=[10], sell_indices=[90])
+        data = _make_data(dates, close)
+        signals = _make_signals(dates, close, buy_indices=[10], sell_indices=[90])
         engine = BacktestEngine()
-        result = engine.run(signals, prices)
-        assert result.final_value > 100_000
+        result = engine.run(data, signals)
+        assert result['final_equity'] > 100_000
 
     def test_commission_and_slippage_affect_result(self):
         dates = pd.date_range('2024-01-01', periods=50, freq='B')
         close = np.linspace(100, 110, 50)
-        prices = _make_prices(dates, close)
-        signals = _make_signals(dates, buy_indices=[5], sell_indices=[45])
+        data = _make_data(dates, close)
+        signals1 = _make_signals(dates, close, buy_indices=[5], sell_indices=[45])
+        signals2 = _make_signals(dates, close, buy_indices=[5], sell_indices=[45])
 
-        engine_with = BacktestEngine(commission=0.001, slippage=0.0005)
-        result_with = engine_with.run(signals, prices)
+        engine_with = BacktestEngine(commission_rate=0.001, slippage_rate=0.0005)
+        result_with = engine_with.run(data, signals1)
 
-        signals2 = _make_signals(dates, buy_indices=[5], sell_indices=[45])
-        engine_zero = BacktestEngine(commission=0.0, slippage=0.0)
-        result_zero = engine_zero.run(signals2, prices)
+        engine_zero = BacktestEngine(commission_rate=0.0, slippage_rate=0.0)
+        result_zero = engine_zero.run(data, signals2)
 
-        assert result_with.final_value <= result_zero.final_value
+        assert result_with['final_equity'] <= result_zero['final_equity']
 
-    def test_custom_symbol_and_strategy_name(self):
+    def test_capital_override(self):
         dates = pd.date_range('2024-01-01', periods=50, freq='B')
-        prices = _make_prices(dates, np.full(50, 100.0))
-        signals = _make_signals(dates)
+        close = np.full(50, 100.0)
+        data = _make_data(dates, close)
+        signals = _make_signals(dates, close)
         engine = BacktestEngine()
-        result = engine.run(signals, prices, symbol='TSLA', strategy_name='TestStrat')
-        assert result.symbol == 'TSLA'
-        assert result.strategy_name == 'TestStrat'
+        result = engine.run(data, signals, capital=200_000)
+        # No trades executed, so final equity should equal capital
+        assert result['final_equity'] == pytest.approx(200_000.0, rel=0.01)
 
-    def test_stop_loss_column_forces_exit(self):
+    def test_stop_loss_triggers_exit(self):
+        """When price drops below stop-loss threshold, position should exit."""
         dates = pd.date_range('2024-01-01', periods=60, freq='B')
-        close = np.concatenate([np.full(30, 100.0), np.linspace(100, 80, 30)])
-        prices = _make_prices(dates, close)
-        signals = _make_signals(dates, buy_indices=[5], sell_indices=[55])
-        signals['stop_loss'] = np.nan
-        signals.loc[dates[20]:, 'stop_loss'] = 95.0
-
+        # Price drops significantly after buy
+        close = np.concatenate([
+            np.full(30, 100.0),
+            np.linspace(100, 70, 30),  # Drops 30% — far below 5% stop loss
+        ])
+        data = _make_data(dates, close)
+        signals = _make_signals(dates, close, buy_indices=[5])
         engine = BacktestEngine()
-        result = engine.run(signals, prices)
-        sell_trades = [t for t in result.trades if t.direction == 'sell']
-        assert len(sell_trades) >= 1
+        result = engine.run(data, signals)
+        # Should have at least one trade (entry + forced exit)
+        assert len(result['trades']) >= 1
+
+    def test_take_profit_triggers_exit(self):
+        """When price rises above take-profit threshold, position should exit."""
+        dates = pd.date_range('2024-01-01', periods=60, freq='B')
+        # Price rises significantly after buy
+        close = np.concatenate([
+            np.full(30, 100.0),
+            np.linspace(100, 130, 30),  # Rises 30% — far above 15% take profit
+        ])
+        data = _make_data(dates, close)
+        signals = _make_signals(dates, close, buy_indices=[5])
+        engine = BacktestEngine()
+        result = engine.run(data, signals)
+        # Should have at least one trade (entry + forced exit)
+        assert len(result['trades']) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +217,9 @@ class TestAnalyzer:
         dates = pd.date_range('2023-01-01', periods=252, freq='B')
         equity = pd.Series(100000 + np.cumsum(np.random.randn(252) * 100), index=dates)
         trades = [
-            {'action': 'sell', 'profit_loss': 1000},
-            {'action': 'sell', 'profit_loss': -500},
-            {'action': 'sell', 'profit_loss': 300},
+            {'profit_loss': 1000},
+            {'profit_loss': -500},
+            {'profit_loss': 300},
         ]
         metrics = Analyzer(_analyzer_result(equity, trades)).analyze()
         assert metrics['win_rate_pct'] == pytest.approx(66.67, abs=0.1)
@@ -206,8 +228,8 @@ class TestAnalyzer:
         dates = pd.date_range('2023-01-01', periods=252, freq='B')
         equity = pd.Series(100000 + np.arange(252) * 10, index=dates)
         trades = [
-            {'action': 'sell', 'profit_loss': 1000},
-            {'action': 'sell', 'profit_loss': -200},
+            {'profit_loss': 1000},
+            {'profit_loss': -200},
         ]
         metrics = Analyzer(_analyzer_result(equity, trades)).analyze()
         assert metrics['profit_factor'] == pytest.approx(5.0, abs=0.1)

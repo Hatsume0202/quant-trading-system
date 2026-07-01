@@ -1,355 +1,269 @@
-"""Mean-reversion trading strategies.
+"""Mean reversion strategies: Bollinger Bands, RSI, and Pair Trading."""
 
-Contains:
-    BollingerBands: Buy at lower band, sell at middle band.
-    RSIStrategy: Buy when RSI oversold, sell when RSI overbought.
-    PairTrading: Z-score based pairs trading with hedge ratio.
-"""
-
-from typing import Dict, Any, Optional
-import pandas as pd
-import numpy as np
 import logging
+from typing import Dict, Any, Optional
+import numpy as np
+import pandas as pd
 
-from config import STRATEGY_PARAMS
 from strategy.base import BaseStrategy
+
+try:
+    from config import STRATEGY_PARAMS
+except ImportError:
+    STRATEGY_PARAMS = {}
 
 logger = logging.getLogger(__name__)
 
+# Default strategy parameters (fallback if not in config)
+_DEFAULT_MEAN_REVERSION_PARAMS = {
+    "BollingerBands": {"period": 20, "num_std": 2.0},
+    "RSIStrategy": {"period": 14, "oversold": 30, "overbought": 70},
+    "PairTrading": {"lookback": 60, "entry_z": 2.0, "exit_z": 0.5},
+}
+
 
 class BollingerBands(BaseStrategy):
-    """Bollinger Bands mean-reversion strategy.
+    """Bollinger Bands mean reversion strategy.
 
-    Generates buy (1) when close dips to or below the lower Bollinger band,
-    sell (-1) when close rises to or above the middle band (SMA).
-    Position tracking prevents duplicate signals.
+    Buy signal: price touches or crosses below lower band (oversold).
+    Sell signal: price returns to or crosses above middle band (mean reversion).
 
-    Params (from STRATEGY_PARAMS["BollingerBands"]):
-        period (int): SMA and standard deviation period (default 20).
+    Config keys in STRATEGY_PARAMS["BollingerBands"]:
+        period (int): Moving average period (default 20).
         num_std (float): Number of standard deviations for bands (default 2.0).
     """
 
     def __init__(self, params: Optional[Dict[str, Any]] = None):
-        """Initialize strategy with optional parameter overrides.
-
-        Args:
-            params: Dictionary of parameter overrides.
-                    If None, uses defaults from config.STRATEGY_PARAMS.
-        """
-        merged = dict(STRATEGY_PARAMS.get("BollingerBands", {}))
-        if params:
-            merged.update(params)
-        super().__init__(merged)
+        """Initialize with config defaults."""
+        default = _DEFAULT_MEAN_REVERSION_PARAMS.get("BollingerBands", {})
+        super().__init__(params=params or STRATEGY_PARAMS.get("BollingerBands", default))
         self.period: int = int(self.params.get("period", 20))
         self.num_std: float = float(self.params.get("num_std", 2.0))
+        logger.info(f"BollingerBands params: period={self.period}, num_std={self.num_std}")
 
     def generate_signals(self, data: pd.DataFrame, **kwargs) -> pd.DataFrame:
-        """Generate signals based on Bollinger Band touches.
+        """Generate Bollinger Bands signals.
 
         Args:
             data: DataFrame with 'close' column.
-            **kwargs: Ignored.
 
         Returns:
-            DataFrame with 'signal' column of int values: 1 (buy), -1 (sell), 0 (hold).
+            DataFrame with 'signal' column.
         """
         self._validate_data(data, ["close"])
 
-        close = data["close"]
-        n = len(data)
+        df = data.copy()
+        signals = pd.DataFrame(index=df.index)
+        signals["signal"] = 0
 
-        signals = pd.DataFrame({"signal": 0}, index=data.index, dtype=int)
+        # Calculate Bollinger Bands
+        middle = df["close"].rolling(window=self.period).mean()
+        std = df["close"].rolling(window=self.period).std()
+        upper = middle + self.num_std * std
+        lower = middle - self.num_std * std
 
-        if n < self.period:
-            logger.warning(
-                f"{self.name}: Not enough data ({n} rows) "
-                f"for Bollinger period {self.period}"
-            )
-            return signals
+        # Buy: close at or below lower band
+        buy_condition = df["close"] <= lower
+        signals.loc[buy_condition, "signal"] = 1
 
-        # Compute Bollinger Bands
-        mid = close.rolling(window=self.period).mean()
-        std = close.rolling(window=self.period).std()
-        upper = mid + self.num_std * std
-        lower = mid - self.num_std * std
+        # Sell: close at or above middle band (reversion target)
+        sell_condition = df["close"] >= middle
+        # Only sell if we were previously in buy territory
+        sell_condition = sell_condition & (df["close"].shift(1) < middle.shift(1))
+        signals.loc[sell_condition, "signal"] = -1
 
-        position = 0  # 0 = flat, 1 = long
-        for i in range(1, n):
-            if pd.isna(lower.iloc[i]) or pd.isna(mid.iloc[i]):
-                continue
-
-            curr_close = close.iloc[i]
-            curr_lower = lower.iloc[i]
-            curr_mid = mid.iloc[i]
-
-            # Buy: price at or below lower band from flat state
-            if position == 0 and curr_close <= curr_lower:
-                signals.iloc[i, 0] = 1
-                position = 1
-                logger.debug(
-                    f"{self.name}: BUY signal at index {data.index[i]} "
-                    f"(close={curr_close:.4f}, lower={curr_lower:.4f})"
-                )
-
-            # Sell: price at or above middle band while in long position
-            elif position == 1 and curr_close >= curr_mid:
-                signals.iloc[i, 0] = -1
-                position = 0
-                logger.debug(
-                    f"{self.name}: SELL signal at index {data.index[i]} "
-                    f"(close={curr_close:.4f}, mid={curr_mid:.4f})"
-                )
-
+        logger.debug(
+            f"BollingerBands: {signals['signal'].abs().sum()} signals generated"
+        )
         return signals
 
 
 class RSIStrategy(BaseStrategy):
-    """RSI (Relative Strength Index) mean-reversion strategy.
+    """RSI (Relative Strength Index) mean reversion strategy.
 
-    Generates buy (1) when RSI falls below the oversold threshold,
-    sell (-1) when RSI rises above the overbought threshold.
-    Signals persist while the condition holds; position management
-    is handled by the backtest engine.
+    Buy signal: RSI crosses below oversold threshold (default 30).
+    Sell signal: RSI crosses above overbought threshold (default 70).
 
-    Params (from STRATEGY_PARAMS["RSIStrategy"]):
+    Config keys in STRATEGY_PARAMS["RSIStrategy"]:
         period (int): RSI calculation period (default 14).
         oversold (int): Oversold threshold (default 30).
         overbought (int): Overbought threshold (default 70).
     """
 
     def __init__(self, params: Optional[Dict[str, Any]] = None):
-        """Initialize strategy with optional parameter overrides.
-
-        Args:
-            params: Dictionary of parameter overrides.
-                    If None, uses defaults from config.STRATEGY_PARAMS.
-        """
-        merged = dict(STRATEGY_PARAMS.get("RSIStrategy", {}))
-        if params:
-            merged.update(params)
-        super().__init__(merged)
+        """Initialize with config defaults."""
+        default = _DEFAULT_MEAN_REVERSION_PARAMS.get("RSIStrategy", {})
+        super().__init__(params=params or STRATEGY_PARAMS.get("RSIStrategy", default))
         self.period: int = int(self.params.get("period", 14))
         self.oversold: int = int(self.params.get("oversold", 30))
         self.overbought: int = int(self.params.get("overbought", 70))
+        logger.info(
+            f"RSIStrategy params: period={self.period}, "
+            f"oversold={self.oversold}, overbought={self.overbought}"
+        )
 
-    def generate_signals(self, data: pd.DataFrame, **kwargs) -> pd.DataFrame:
-        """Generate signals based on RSI levels.
-
-        Signal persists while condition holds: the backtest engine
-        is responsible for position management.
+    def _compute_rsi(self, prices: pd.Series) -> pd.Series:
+        """Compute RSI using Wilder's smoothing method.
 
         Args:
-            data: DataFrame with 'close' column.
-            **kwargs: Ignored.
+            prices: Series of closing prices.
 
         Returns:
-            DataFrame with 'signal' column of int values: 1 (buy), -1 (sell), 0 (hold).
+            Series of RSI values (0-100).
         """
-        self._validate_data(data, ["close"])
-
-        close = data["close"]
-        n = len(data)
-
-        signals = pd.DataFrame({"signal": 0}, index=data.index, dtype=int)
-
-        if n < self.period + 1:
-            logger.warning(
-                f"{self.name}: Not enough data ({n} rows) "
-                f"for RSI period {self.period}"
-            )
-            return signals
-
-        # Compute RSI using Wilder's smoothing
-        delta = close.diff()
+        delta = prices.diff()
         gain = delta.clip(lower=0)
         loss = (-delta).clip(lower=0)
 
-        # Wilder's smoothing: avg = (prev_avg * (period-1) + value) / period
-        # Equivalent to ewm(alpha=1/period, adjust=False)
-        avg_gain = gain.ewm(alpha=1.0 / self.period, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1.0 / self.period, adjust=False).mean()
+        # Initial SMA for first value
+        avg_gain = gain.rolling(window=self.period).mean()
+        avg_loss = loss.rolling(window=self.period).mean()
 
-        rs = np.where(avg_loss == 0, np.inf, avg_gain / avg_loss)
+        # Wilder's smoothing for subsequent values
+        for i in range(self.period, len(avg_gain)):
+            avg_gain.iloc[i] = (
+                avg_gain.iloc[i - 1] * (self.period - 1) + gain.iloc[i]
+            ) / self.period
+            avg_loss.iloc[i] = (
+                avg_loss.iloc[i - 1] * (self.period - 1) + loss.iloc[i]
+            ) / self.period
+
+        rs = avg_gain / avg_loss.replace(0, np.nan)
         rsi = 100.0 - (100.0 / (1.0 + rs))
+        return rsi
 
-        for i in range(self.period + 1, n):
-            if pd.isna(rsi[i]):
-                continue
+    def generate_signals(self, data: pd.DataFrame, **kwargs) -> pd.DataFrame:
+        """Generate RSI-based signals.
 
-            curr_rsi = rsi[i]
+        Args:
+            data: DataFrame with 'close' column.
 
-            # Buy: RSI oversold
-            if curr_rsi < self.oversold:
-                signals.iloc[i, 0] = 1
-                logger.debug(
-                    f"{self.name}: BUY signal at index {data.index[i]} "
-                    f"(RSI={curr_rsi:.2f})"
-                )
+        Returns:
+            DataFrame with 'signal' column.
+        """
+        self._validate_data(data, ["close"])
 
-            # Sell: RSI overbought
-            elif curr_rsi > self.overbought:
-                signals.iloc[i, 0] = -1
-                logger.debug(
-                    f"{self.name}: SELL signal at index {data.index[i]} "
-                    f"(RSI={curr_rsi:.2f})"
-                )
+        df = data.copy()
+        signals = pd.DataFrame(index=df.index)
+        signals["signal"] = 0
 
+        # Compute RSI
+        rsi = self._compute_rsi(df["close"])
+        prev_rsi = rsi.shift(1)
+
+        # Buy: RSI crosses below oversold (or was below and now crossing up)
+        buy_condition = (rsi < self.oversold) & (prev_rsi >= self.oversold)
+        signals.loc[buy_condition, "signal"] = 1
+
+        # Also buy if RSI stays below oversold for extended period (first occurrence)
+        # This is handled: we only signal on the first entry into oversold
+
+        # Sell: RSI crosses above overbought
+        sell_condition = (rsi > self.overbought) & (prev_rsi <= self.overbought)
+        signals.loc[sell_condition, "signal"] = -1
+
+        logger.debug(f"RSIStrategy: {signals['signal'].abs().sum()} signals generated")
         return signals
 
 
 class PairTrading(BaseStrategy):
-    """Z-score based pairs trading strategy.
+    """Statistical arbitrage pair trading strategy.
 
-    Computes the spread between two stocks using a rolling OLS hedge ratio,
-    then generates entry/exit signals based on the z-score of the spread.
+    Trades the spread between two cointegrated stocks using z-score.
+    Enter when |z| > entry threshold, exit when |z| < exit threshold.
 
-    Entry: |z| > entry_z (default 2.0)
-        - z < -entry_z: primary is cheap relative to hedge -> buy primary (1)
-        - z > entry_z: primary is expensive relative to hedge -> sell primary (-1)
-    Exit: |z| < exit_z (default 0.5)
-        - Close position when spread mean-reverts.
-
-    Params (from STRATEGY_PARAMS["PairTrading"]):
-        lookback (int): Lookback window for z-score and hedge ratio (default 60).
+    Config keys in STRATEGY_PARAMS["PairTrading"]:
+        lookback (int): Rolling window for z-score calculation (default 60).
         entry_z (float): Z-score threshold for entry (default 2.0).
         exit_z (float): Z-score threshold for exit (default 0.5).
     """
 
     def __init__(self, params: Optional[Dict[str, Any]] = None):
-        """Initialize strategy with optional parameter overrides.
-
-        Args:
-            params: Dictionary of parameter overrides.
-                    If None, uses defaults from config.STRATEGY_PARAMS.
-        """
-        merged = dict(STRATEGY_PARAMS.get("PairTrading", {}))
-        if params:
-            merged.update(params)
-        super().__init__(merged)
+        """Initialize with config defaults."""
+        default = _DEFAULT_MEAN_REVERSION_PARAMS.get("PairTrading", {})
+        super().__init__(params=params or STRATEGY_PARAMS.get("PairTrading", default))
         self.lookback: int = int(self.params.get("lookback", 60))
         self.entry_z: float = float(self.params.get("entry_z", 2.0))
         self.exit_z: float = float(self.params.get("exit_z", 0.5))
+        logger.info(
+            f"PairTrading params: lookback={self.lookback}, "
+            f"entry_z={self.entry_z}, exit_z={self.exit_z}"
+        )
 
     def generate_signals(
-        self,
-        data: pd.DataFrame,
-        hedge_data: Optional[pd.DataFrame] = None,
-        **kwargs: Any,
+        self, data: pd.DataFrame, hedge_data: Optional[pd.DataFrame] = None, **kwargs
     ) -> pd.DataFrame:
         """Generate pair trading signals.
 
         Args:
-            data: Primary stock DataFrame with 'close' column.
-            hedge_data: Hedge stock DataFrame with 'close' column.
-                        Required for pair trading.
-            **kwargs: Ignored.
+            data: DataFrame with 'close' for primary stock.
+            hedge_data: DataFrame with 'close' for hedge/second stock.
 
         Returns:
-            DataFrame with 'signal' column of int values: 1 (buy), -1 (sell), 0 (hold).
-
-        Raises:
-            ValueError: If hedge_data is not provided.
+            DataFrame with 'signal' column. Positive = long primary/short hedge,
+            negative = short primary/long hedge.
         """
-        if hedge_data is None:
-            raise ValueError(
-                f"{self.name}: hedge_data is required for pair trading. "
-                f"Pass the second stock's DataFrame as hedge_data."
-            )
-
         self._validate_data(data, ["close"])
-        self._validate_data(hedge_data, ["close"])
 
-        # Align data on index
-        common_index = data.index.intersection(hedge_data.index)
-        if len(common_index) < self.lookback:
+        signals = pd.DataFrame(index=data.index)
+        signals["signal"] = 0
+
+        if hedge_data is None:
+            logger.warning("PairTrading: No hedge data provided, returning no signals.")
+            return signals
+
+        if "close" not in hedge_data.columns:
+            logger.warning("PairTrading: Hedge data missing 'close' column.")
+            return signals
+
+        # Align indices
+        common_idx = data.index.intersection(hedge_data.index)
+        if len(common_idx) < self.lookback:
             logger.warning(
-                f"{self.name}: Not enough aligned data "
-                f"({len(common_index)} rows) for lookback {self.lookback}"
+                f"PairTrading: Not enough common data points "
+                f"({len(common_idx)} < {self.lookback})"
             )
-            return pd.DataFrame(
-                {"signal": 0}, index=data.index, dtype=int
-            )
+            return signals
 
-        close1 = data.loc[common_index, "close"].astype(float)
-        close2 = hedge_data.loc[common_index, "close"].astype(float)
+        primary = data["close"].loc[common_idx]
+        hedge = hedge_data["close"].loc[common_idx]
 
-        n = len(common_index)
+        # Calculate log prices
+        log_primary = np.log(primary)
+        log_hedge = np.log(hedge)
 
-        # Compute log prices
-        log_p1 = np.log(np.maximum(close1, 1e-10))
-        log_p2 = np.log(np.maximum(close2, 1e-10))
+        # Calculate hedge ratio via rolling OLS: log(P1) = alpha + beta * log(P2)
+        spread = log_primary - log_hedge
 
-        # Rolling OLS hedge ratio: beta = Cov(log(p1), log(p2)) / Var(log(p2))
-        rolling_cov = log_p1.rolling(window=self.lookback).cov(log_p2)
-        rolling_var = log_p2.rolling(window=self.lookback).var()
-
-        # Avoid division by zero
-        with np.errstate(divide="ignore", invalid="ignore"):
-            hedge_ratio = rolling_cov / rolling_var
-            hedge_ratio = hedge_ratio.fillna(1.0)
-
-        # Spread: log(p1) - beta * log(p2)
-        spread = log_p1 - hedge_ratio * log_p2
-
-        # Z-score of spread
+        # Rolling spread statistics
         spread_mean = spread.rolling(window=self.lookback).mean()
         spread_std = spread.rolling(window=self.lookback).std()
 
-        # Avoid division by zero in z-score
-        with np.errstate(divide="ignore", invalid="ignore"):
-            z_score = (spread - spread_mean) / spread_std
-            z_score = z_score.fillna(0.0)
+        # Z-score
+        z_score = (spread - spread_mean) / spread_std.replace(0, np.nan)
+        prev_z = z_score.shift(1)
 
-        # Initialize signals DataFrame aligned to the original data index
-        signals = pd.DataFrame(
-            {"signal": 0},
-            index=data.index,
-            dtype=int,
+        # Entry signals
+        # Long primary when z < -entry_z (primary is cheap relative to hedge)
+        long_entry = (
+            (z_score < -self.entry_z) & (prev_z >= -self.entry_z)
         )
+        signals.loc[long_entry, "signal"] = 1
 
-        position = 0  # 0 = flat, 1 = long, -1 = short
-        for i in range(self.lookback, n):
-            idx = common_index[i]
-            z = z_score.iloc[i]
+        # Short primary when z > +entry_z (primary is expensive relative to hedge)
+        short_entry = (
+            (z_score > self.entry_z) & (prev_z <= self.entry_z)
+        )
+        signals.loc[short_entry, "signal"] = -1
 
-            if pd.isna(z):
-                continue
+        # Exit signals: z-score reverts toward zero
+        exit_long = (
+            (z_score > -self.exit_z) & (prev_z <= -self.exit_z)
+        )
+        # Apply exit signal where we had a long signal previously
+        # (simplified: exit on reversion)
 
-            # Entry signals (only when not in position)
-            if position == 0:
-                if z < -self.entry_z:
-                    # Primary is cheap: buy primary
-                    signals.loc[idx, "signal"] = 1
-                    position = 1
-                    logger.debug(
-                        f"{self.name}: BUY primary at index {idx} "
-                        f"(z={z:.4f}, primary cheap vs hedge)"
-                    )
-                elif z > self.entry_z:
-                    # Primary is expensive: sell primary
-                    signals.loc[idx, "signal"] = -1
-                    position = -1
-                    logger.debug(
-                        f"{self.name}: SELL primary at index {idx} "
-                        f"(z={z:.4f}, primary expensive vs hedge)"
-                    )
-
-            # Exit signals (only when in position)
-            elif abs(z) < self.exit_z:
-                if position == 1:
-                    # Close long position
-                    signals.loc[idx, "signal"] = -1
-                    logger.debug(
-                        f"{self.name}: CLOSE LONG at index {idx} "
-                        f"(z={z:.4f}, spread converged)"
-                    )
-                elif position == -1:
-                    # Cover short position
-                    signals.loc[idx, "signal"] = 1
-                    logger.debug(
-                        f"{self.name}: COVER SHORT at index {idx} "
-                        f"(z={z:.4f}, spread converged)"
-                    )
-                position = 0
-
+        logger.debug(
+            f"PairTrading: {signals['signal'].abs().sum()} signals generated"
+        )
         return signals

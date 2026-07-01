@@ -27,11 +27,12 @@ class DataFetcher:
             source: "yfinance" or "simulated".
 
         Returns:
-            DataFrame with columns: open, high, low, close, volume.
+            DataFrame with columns: Open, High, Low, Close, Volume.
+            Index name: Date.
         """
         if source == "simulated":
             return self._generate_simulated(symbol, start, end)
-        
+
         try:
             return self._fetch_yfinance(symbol, start, end)
         except Exception as e:
@@ -46,9 +47,8 @@ class DataFetcher:
         if data.empty:
             raise ValueError(f"No data for {symbol}")
         df = data[["Open", "High", "Low", "Close", "Volume"]].copy()
-        df.columns = ["open", "high", "low", "close", "volume"]
         df.index = pd.to_datetime(df.index).tz_localize(None)
-        df.index.name = "date"
+        df.index.name = "Date"
         for col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         return df.dropna()
@@ -92,7 +92,7 @@ class DataFetcher:
         df = pd.DataFrame(
             data,
             index=dates,
-            columns=["open", "high", "low", "close", "volume"],
+            columns=["Open", "High", "Low", "Close", "Volume"],
         )
-        df.index.name = "date"
+        df.index.name = "Date"
         return df

@@ -1,0 +1,74 @@
+"""Global configuration constants for the quant trading system."""
+
+# Default settings
+DEFAULT_SYMBOL = "AAPL"
+DEFAULT_CAPITAL = 100_000.0
+DEFAULT_START_DATE = "2023-01-01"
+DEFAULT_END_DATE = "2024-12-31"
+
+# Transaction costs
+COMMISSION_RATE = 0.001   # 0.1%
+SLIPPAGE_RATE = 0.0005    # 0.05%
+
+# Aliases for compatibility with backtest engine
+INITIAL_CAPITAL = DEFAULT_CAPITAL
+COMMISSION = COMMISSION_RATE
+SLIPPAGE = SLIPPAGE_RATE
+
+# Strategy defaults
+MA_SHORT_WINDOW = 10
+MA_LONG_WINDOW = 30
+MOMENTUM_LOOKBACK = 20
+MOMENTUM_EXIT_LOOKBACK = 10
+RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 30
+STOP_LOSS_PCT = 0.05       # 5%
+TAKE_PROFIT_PCT = 0.15     # 15%
+POSITION_SIZE_PCT = 0.80   # 80% of capital per trade
+
+# Risk-free rate for Sharpe ratio
+RISK_FREE_RATE = 0.02      # 2%
+
+# Output directories
+REPORT_DIR = "reports"
+LOG_DIR = "logs"
+DATA_DIR = "data_cache"
+
+# Logging
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+class Config:
+    """Configuration class to hold all settings."""
+    
+    DEFAULT_SYMBOL = "AAPL"
+    DEFAULT_CAPITAL = 100_000.0
+    DEFAULT_START_DATE = "2023-01-01"
+    DEFAULT_END_DATE = "2024-12-31"
+    
+    COMMISSION_RATE = 0.001
+    SLIPPAGE_RATE = 0.0005
+    
+    MA_SHORT_WINDOW = 10
+    MA_LONG_WINDOW = 30
+    MOMENTUM_LOOKBACK = 20
+    MOMENTUM_EXIT_LOOKBACK = 10
+    RSI_OVERBOUGHT = 70
+    RSI_OVERSOLD = 30
+    STOP_LOSS_PCT = 0.05
+    TAKE_PROFIT_PCT = 0.15
+    POSITION_SIZE_PCT = 0.80
+    
+    RISK_FREE_RATE = 0.02
+    
+    REPORT_DIR = "reports"
+    LOG_DIR = "logs"
+    DATA_DIR = "data_cache"
+    
+    LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+# Create default config instance
+config = Config()
