@@ -29,6 +29,13 @@ POSITION_SIZE_PCT = 0.80   # 80% of capital per trade
 # Risk-free rate for Sharpe ratio
 RISK_FREE_RATE = 0.02      # 2%
 
+# Risk management
+RISK_PER_TRADE = 0.02      # 2% of capital risked per trade
+MAX_POSITION_SIZE = 0.20   # 20% max portfolio in one position
+MAX_DRAWDOWN_LIMIT = 0.15  # 15% drawdown triggers liquidation
+ATR_PERIOD = 14            # ATR lookback period
+ATR_STOP_MULTIPLIER = 2.0  # ATR multiplier for stop-loss distance
+
 # Output directories
 REPORT_DIR = "reports"
 LOG_DIR = "logs"
@@ -37,6 +44,12 @@ DATA_DIR = "data_cache"
 # Logging
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# Backward-compatible aliases for backtest engine
+INITIAL_CAPITAL = DEFAULT_CAPITAL     # 100,000
+COMMISSION = COMMISSION_RATE          # 0.001
+SLIPPAGE = SLIPPAGE_RATE              # 0.0005
+BENCHMARK_SYMBOL = "SPY"              # ETF benchmark
 
 __all__ = [
     "Config",
@@ -57,9 +70,18 @@ __all__ = [
     "TAKE_PROFIT_PCT",
     "POSITION_SIZE_PCT",
     "RISK_FREE_RATE",
+    "RISK_PER_TRADE",
+    "MAX_POSITION_SIZE",
+    "MAX_DRAWDOWN_LIMIT",
+    "ATR_PERIOD",
+    "ATR_STOP_MULTIPLIER",
     "REPORT_DIR",
     "LOG_DIR",
     "DATA_DIR",
     "LOG_FORMAT",
     "LOG_DATE_FORMAT",
+    "INITIAL_CAPITAL",
+    "COMMISSION",
+    "SLIPPAGE",
+    "BENCHMARK_SYMBOL",
 ]

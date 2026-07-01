@@ -1,44 +1,61 @@
-"""Base strategy class defining the interface for all trading strategies."""
+"""Base strategy abstract class."""
 
 from abc import ABC, abstractmethod
-
+from typing import Dict, Any, Optional
 import pandas as pd
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-class Strategy(ABC):
-    """Abstract base class for trading strategies.
+class BaseStrategy(ABC):
+    """Abstract base class for all trading strategies.
 
-    All strategies must implement generate_signals which returns
-    a Series of trading signals aligned with the input data index.
-
-    Signal values:
-        1  -> Long entry (buy)
-        -1 -> Exit position (sell)
-        0  -> Hold / no action
+    All strategies must implement generate_signals() which returns a DataFrame
+    with a 'signal' column: 1 = buy/long, -1 = sell/short, 0 = hold/no action.
     """
 
-    def __init__(self, **params):
-        """Initialize strategy with configurable parameters.
+    def __init__(self, params: Optional[Dict[str, Any]] = None):
+        """Initialize strategy with optional parameter overrides.
 
         Args:
-            **params: Strategy-specific parameters.
+            params: Dictionary of parameter overrides. If None, uses config defaults.
         """
-        self.params = params
-        self.name = self.__class__.__name__
+        self.name: str = self.__class__.__name__
+        self.params: Dict[str, Any] = params or {}
+        logger.info(f"Initialized {self.name} with params: {self.params}")
 
     @abstractmethod
-    def generate_signals(self, data: pd.DataFrame) -> pd.Series:
+    def generate_signals(self, data: pd.DataFrame, **kwargs) -> pd.DataFrame:
         """Generate trading signals from market data.
 
         Args:
-            data: DataFrame with price and indicator columns.
+            data: DataFrame with OHLCV and indicator columns.
+            **kwargs: Additional data (e.g., second stock for pair trading).
 
         Returns:
-            pd.Series of signals with same index as data.
-            Values: 1 (buy), -1 (sell), 0 (hold).
+            DataFrame with 'signal' column (1, -1, or 0) and same index as input.
         """
         pass
 
-    def __repr__(self):
-        params_str = ", ".join(f"{k}={v}" for k, v in self.params.items())
-        return f"{self.name}({params_str})"
+    def _validate_data(self, data: pd.DataFrame, required_cols: list) -> None:
+        """Validate that required columns exist in the data.
+
+        Args:
+            data: Input DataFrame.
+            required_cols: List of required column names.
+
+        Raises:
+            ValueError: If any required column is missing.
+        """
+        missing = [col for col in required_cols if col not in data.columns]
+        if missing:
+            raise ValueError(f"{self.name}: Missing required columns: {missing}")
+
+    def get_params(self) -> Dict[str, Any]:
+        """Get current strategy parameters."""
+        return self.params
+
+
+# Backward compatibility alias
+Strategy = BaseStrategy

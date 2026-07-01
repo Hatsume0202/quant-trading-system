@@ -1,91 +1,98 @@
-"""Data fetcher using yfinance with simulated data fallback."""
+"""Data fetcher: yfinance for real data, GBM for simulated data."""
 
 import logging
 import numpy as np
 import pandas as pd
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
 class DataFetcher:
-    """Fetches stock historical data from yfinance, falls back to simulated data."""
+    """Fetches historical OHLCV data or generates simulated data."""
 
-    def __init__(self):
-        self._yfinance_available = None
+    def fetch(
+        self,
+        symbol: str,
+        start: str,
+        end: str,
+        source: str = "yfinance",
+    ) -> pd.DataFrame:
+        """Fetch data for a single symbol.
 
-    def _check_yfinance(self) -> bool:
-        """Check if yfinance is available and working."""
-        if self._yfinance_available is not None:
-            return self._yfinance_available
-        try:
-            import yfinance as yf
-            ticker = yf.Ticker("AAPL")
-            data = ticker.history(period="5d")
-            if data is not None and not data.empty:
-                self._yfinance_available = True
-                return True
-        except Exception:
-            pass
-        self._yfinance_available = False
-        return False
+        Args:
+            symbol: Ticker symbol (e.g., "AAPL").
+            start: Start date "YYYY-MM-DD".
+            end: End date "YYYY-MM-DD".
+            source: "yfinance" or "simulated".
 
-    def fetch(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        """Fetch historical daily data for a symbol.
-
-        Returns DataFrame with columns: Open, High, Low, Close, Volume, indexed by Date.
+        Returns:
+            DataFrame with columns: open, high, low, close, volume.
         """
-        if self._check_yfinance():
-            try:
-                return self._fetch_yfinance(symbol, start, end)
-            except Exception as e:
-                logger.warning(f"yfinance fetch failed: {e}, falling back to simulated data")
-
-        logger.info(f"Using simulated data for {symbol}")
-        return self._generate_mock_data(symbol, start, end)
+        if source == "simulated":
+            return self._generate_simulated(symbol, start, end)
+        
+        try:
+            return self._fetch_yfinance(symbol, start, end)
+        except Exception as e:
+            logger.warning(f"yfinance fetch failed: {e}, falling back to simulated")
+            return self._generate_simulated(symbol, start, end)
 
     def _fetch_yfinance(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        """Fetch data from yfinance."""
+        """Download from Yahoo Finance."""
         import yfinance as yf
         ticker = yf.Ticker(symbol)
         data = ticker.history(start=start, end=end)
         if data.empty:
-            raise ValueError(f"No data returned for {symbol}")
-        data = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-        data.index = pd.to_datetime(data.index).tz_localize(None)
-        data.index.name = 'Date'
-        return data
+            raise ValueError(f"No data for {symbol}")
+        df = data[["Open", "High", "Low", "Close", "Volume"]].copy()
+        df.columns = ["open", "high", "low", "close", "volume"]
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        df.index.name = "date"
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df.dropna()
 
-    def _generate_mock_data(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        """Generate realistic simulated stock data using geometric Brownian motion."""
-        dates = pd.date_range(start=start, end=end, freq='B')
+    def _generate_simulated(
+        self, symbol: str, start: str, end: str,
+        initial_price: float = 100.0, mu: float = 0.0005, sigma: float = 0.02,
+    ) -> pd.DataFrame:
+        """Generate synthetic OHLCV data using Geometric Brownian Motion.
+
+        Args:
+            symbol: Ticker symbol (for labeling).
+            start: Start date.
+            end: End date.
+            initial_price: Starting price.
+            mu: Daily drift.
+            sigma: Daily volatility.
+
+        Returns:
+            DataFrame with simulated OHLCV data.
+        """
+        dates = pd.bdate_range(start=start, end=end)
         n = len(dates)
         if n == 0:
             raise ValueError(f"No business days between {start} and {end}")
 
-        seed = sum(ord(c) for c in symbol)
-        rng = np.random.default_rng(seed)
+        np.random.seed(hash(symbol) % (2**31))
+        returns = np.random.normal(mu, sigma, n)
+        prices = initial_price * np.exp(np.cumsum(returns))
 
-        initial_price = 150.0
-        mu = 0.0008    # ~20% annual drift
-        sigma = 0.015  # daily volatility
+        data = []
+        for i, p in enumerate(prices):
+            daily_range = p * sigma * abs(np.random.normal(0, 1))
+            o = p * (1 + np.random.normal(0, sigma * 0.5))
+            h = max(o, p) + daily_range * abs(np.random.normal(0, 0.3))
+            l = min(o, p) - daily_range * abs(np.random.normal(0, 0.3))
+            c = p
+            v = int(abs(np.random.normal(1_000_000, 300_000)))
+            data.append([o, h, l, c, v])
 
-        daily_returns = rng.normal(mu, sigma, n)
-        prices = initial_price * np.exp(np.cumsum(daily_returns))
-
-        noise = rng.normal(0, 0.005, n)
-        df = pd.DataFrame({
-            'Open': prices * (1 + noise),
-            'High': prices * (1 + np.abs(rng.normal(0, 0.01, n))),
-            'Low': prices * (1 - np.abs(rng.normal(0, 0.01, n))),
-            'Close': prices,
-            'Volume': rng.integers(50_000_000, 100_000_000, n),
-        }, index=dates)
-
-        # Ensure OHLC consistency
-        for i in range(n):
-            o, c = df.iloc[i]['Open'], df.iloc[i]['Close']
-            df.iloc[i, df.columns.get_loc('High')] = max(df.iloc[i]['High'], o, c)
-            df.iloc[i, df.columns.get_loc('Low')] = min(df.iloc[i]['Low'], o, c)
-
-        df.index.name = 'Date'
+        df = pd.DataFrame(
+            data,
+            index=dates,
+            columns=["open", "high", "low", "close", "volume"],
+        )
+        df.index.name = "date"
         return df
