@@ -1,143 +1,91 @@
-"""Data fetching module - supports yfinance and simulated data generation."""
+"""Data fetcher using yfinance with simulated data fallback."""
 
-from typing import List, Optional
-
+import logging
 import numpy as np
 import pandas as pd
 
-
-def fetch_data(
-    symbols: List[str],
-    start: str,
-    end: str,
-    source: str = "yfinance",
-) -> dict:
-    """Fetch OHLCV data for given symbols.
-
-    Args:
-        symbols: List of ticker symbols (e.g. ['AAPL', 'GOOGL']).
-        start: Start date in 'YYYY-MM-DD' format.
-        end: End date in 'YYYY-MM-DD' format.
-        source: Data source - 'yfinance' or 'simulated'.
-
-    Returns:
-        Dict mapping symbol -> pd.DataFrame with columns:
-        ['open', 'high', 'low', 'close', 'volume'] and DatetimeIndex.
-
-    Raises:
-        ValueError: If source is unrecognized or data is empty.
-    """
-    result = {}
-    for symbol in symbols:
-        if source == "yfinance":
-            result[symbol] = _fetch_yfinance(symbol, start, end)
-        elif source == "simulated":
-            result[symbol] = _generate_simulated(symbol, start, end)
-        else:
-            raise ValueError(f"Unknown data source: {source}")
-    return result
+logger = logging.getLogger(__name__)
 
 
-def _fetch_yfinance(symbol: str, start: str, end: str) -> pd.DataFrame:
-    """Fetch real market data from Yahoo Finance.
+class DataFetcher:
+    """Fetches stock historical data from yfinance, falls back to simulated data."""
 
-    Args:
-        symbol: Ticker symbol.
-        start: Start date string.
-        end: End date string.
+    def __init__(self):
+        self._yfinance_available = None
 
-    Returns:
-        DataFrame with OHLCV columns.
-    """
-    try:
+    def _check_yfinance(self) -> bool:
+        """Check if yfinance is available and working."""
+        if self._yfinance_available is not None:
+            return self._yfinance_available
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker("AAPL")
+            data = ticker.history(period="5d")
+            if data is not None and not data.empty:
+                self._yfinance_available = True
+                return True
+        except Exception:
+            pass
+        self._yfinance_available = False
+        return False
+
+    def fetch(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        """Fetch historical daily data for a symbol.
+
+        Returns DataFrame with columns: Open, High, Low, Close, Volume, indexed by Date.
+        """
+        if self._check_yfinance():
+            try:
+                return self._fetch_yfinance(symbol, start, end)
+            except Exception as e:
+                logger.warning(f"yfinance fetch failed: {e}, falling back to simulated data")
+
+        logger.info(f"Using simulated data for {symbol}")
+        return self._generate_mock_data(symbol, start, end)
+
+    def _fetch_yfinance(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        """Fetch data from yfinance."""
         import yfinance as yf
-    except ImportError:
-        raise ImportError(
-            "yfinance is required for real data. "
-            "Install with: pip install yfinance"
-        )
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(start=start, end=end)
+        if data.empty:
+            raise ValueError(f"No data returned for {symbol}")
+        data = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+        data.index = pd.to_datetime(data.index).tz_localize(None)
+        data.index.name = 'Date'
+        return data
 
-    ticker = yf.download(symbol, start=start, end=end, progress=False)
+    def _generate_mock_data(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        """Generate realistic simulated stock data using geometric Brownian motion."""
+        dates = pd.date_range(start=start, end=end, freq='B')
+        n = len(dates)
+        if n == 0:
+            raise ValueError(f"No business days between {start} and {end}")
 
-    if ticker.empty:
-        raise ValueError(f"No data returned for {symbol} in range {start} to {end}")
+        seed = sum(ord(c) for c in symbol)
+        rng = np.random.default_rng(seed)
 
-    # Handle MultiIndex columns from yfinance
-    if isinstance(ticker.columns, pd.MultiIndex):
-        ticker = ticker.xs(symbol, axis=1, level=1)
+        initial_price = 150.0
+        mu = 0.0008    # ~20% annual drift
+        sigma = 0.015  # daily volatility
 
-    # Standardize column names
-    ticker.columns = [c.lower() for c in ticker.columns]
-    required_cols = ['open', 'high', 'low', 'close', 'volume']
-    available = [c for c in required_cols if c in ticker.columns]
-    if len(available) < 5:
-        missing = set(required_cols) - set(available)
-        raise ValueError(f"Missing columns in data for {symbol}: {missing}")
+        daily_returns = rng.normal(mu, sigma, n)
+        prices = initial_price * np.exp(np.cumsum(daily_returns))
 
-    return ticker[required_cols]
+        noise = rng.normal(0, 0.005, n)
+        df = pd.DataFrame({
+            'Open': prices * (1 + noise),
+            'High': prices * (1 + np.abs(rng.normal(0, 0.01, n))),
+            'Low': prices * (1 - np.abs(rng.normal(0, 0.01, n))),
+            'Close': prices,
+            'Volume': rng.integers(50_000_000, 100_000_000, n),
+        }, index=dates)
 
+        # Ensure OHLC consistency
+        for i in range(n):
+            o, c = df.iloc[i]['Open'], df.iloc[i]['Close']
+            df.iloc[i, df.columns.get_loc('High')] = max(df.iloc[i]['High'], o, c)
+            df.iloc[i, df.columns.get_loc('Low')] = min(df.iloc[i]['Low'], o, c)
 
-def _generate_simulated(
-    symbol: str,
-    start: str,
-    end: str,
-    initial_price: Optional[float] = None,
-    mu: float = 0.07,
-    sigma: float = 0.25,
-    seed: int = 42,
-) -> pd.DataFrame:
-    """Generate simulated OHLCV data using Geometric Brownian Motion.
-
-    Args:
-        symbol: Ticker symbol (used for seeding consistency).
-        start: Start date.
-        end: End date.
-        initial_price: Starting price. If None, random 20-200.
-        mu: Drift (annual return).
-        sigma: Volatility (annual).
-        seed: Random seed for reproducibility.
-
-    Returns:
-        DataFrame with daily OHLCV data.
-    """
-    dates = pd.date_range(start=start, end=end, freq='B')
-    n = len(dates)
-    if n < 2:
-        raise ValueError(f"Date range {start} to {end} has insufficient trading days")
-
-    rng = np.random.default_rng(seed)
-
-    if initial_price is None:
-        initial_price = 20.0 + (hash(symbol) % 180)
-
-    dt = 1 / 252  # daily
-    returns = rng.normal(
-        (mu - 0.5 * sigma ** 2) * dt,
-        sigma * np.sqrt(dt),
-        size=n,
-    )
-    prices = initial_price * np.exp(np.cumsum(returns))
-
-    volume = rng.integers(100_000, 10_000_000, size=n)
-
-    # Build realistic OHLC with intraday noise
-    high_noise = 1 + rng.uniform(0, 0.03, size=n)
-    low_noise = 1 - rng.uniform(0, 0.03, size=n)
-    open_noise = 1 + rng.normal(0, 0.005, size=n)
-
-    df = pd.DataFrame({
-        'open': prices * open_noise,
-        'high': prices * high_noise,
-        'low': prices * low_noise,
-        'close': prices,
-        'volume': volume,
-    }, index=dates)
-
-    # Ensure high >= max(open, close) and low <= min(open, close)
-    for i in range(len(df)):
-        row = df.iloc[i]
-        o, c = row['open'], row['close']
-        df.iloc[i, df.columns.get_loc('high')] = max(row['high'], o, c)
-        df.iloc[i, df.columns.get_loc('low')] = min(row['low'], o, c)
-
-    return df
+        df.index.name = 'Date'
+        return df

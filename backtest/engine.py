@@ -85,8 +85,12 @@ class BacktestEngine:
                 # Close existing position first
                 if broker.positions.get(symbol, 0) > 0:
                     broker.execute_sell(symbol, idx, price)
-                # Open new long position with all available cash
-                broker.execute_buy(symbol, idx, price, amount=broker.cash)
+                # Open new long position respecting max position size
+                current_equity = broker.get_equity({symbol: price})
+                max_position = self.config.MAX_POSITION_SIZE * current_equity
+                invest_amount = min(broker.cash, max_position)
+                if invest_amount > 0:
+                    broker.execute_buy(symbol, idx, price, amount=invest_amount)
 
             elif signal == -1:  # Sell
                 broker.execute_sell(symbol, idx, price)
