@@ -179,21 +179,21 @@ class ReportGenerator:
             "",
             "| Metric | Value |",
             "|--------|-------|",
-            f"| Total Return | {metrics.get('total_return', 0):.2%} |",
-            f"| Annualized Return | {metrics.get('annualized_return', 0):.2%} |",
+            f"| Total Return | {metrics.get('total_return', 0):.2f}% |",
+            f"| Annualized Return | {metrics.get('annualized_return', 0):.2f}% |",
             f"| Sharpe Ratio | {metrics.get('sharpe_ratio', 0):.2f} |",
             f"| Sortino Ratio | {metrics.get('sortino_ratio', 0):.2f} |",
-            f"| Max Drawdown | {metrics.get('max_drawdown', 0):.2%} |",
+            f"| Max Drawdown | {metrics.get('max_drawdown', 0):.2f}% |",
             f"| Drawdown Duration | {metrics.get('drawdown_duration', 0)} days |",
             f"| Calmar Ratio | {metrics.get('calmar_ratio', 0):.2f} |",
-            f"| Win Rate | {metrics.get('win_rate', 0):.2%} |",
+            f"| Win Rate | {metrics.get('win_rate', 0):.2f}% |",
             f"| Profit/Loss Ratio | {metrics.get('profit_loss_ratio', 0):.2f} |",
             f"| Total Trades | {metrics.get('total_trades', 0):.0f} |",
             f"| Total P&L | ${metrics.get('total_pnl', 0):,.2f} |",
         ]
 
         if 'alpha' in metrics:
-            lines.append(f"| Alpha (annual) | {metrics['alpha']:.2%} |")
+            lines.append(f"| Alpha (annual) | {metrics['alpha']:.2f}% |")
             lines.append(f"| Beta | {metrics['beta']:.2f} |")
 
         if 'var_95' in metrics:
