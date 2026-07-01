@@ -398,4 +398,4 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Add technical indicators to OHLCV data (convenience function)."""
-    return _processor.add_indicators(df)
+    return _processor.add_all_indicators(df)

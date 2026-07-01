@@ -1,5 +1,8 @@
+"""Backtesting module with engine, broker, and performance analyzer."""
+
 from .engine import BacktestEngine
-from .analyzer import PerformanceAnalyzer
+from .broker import Broker, TradeRecord
+from .analyzer import Analyzer
 from .reporter import ReportGenerator
 
-__all__ = ["BacktestEngine", "PerformanceAnalyzer", "ReportGenerator"]
+__all__ = ["BacktestEngine", "Broker", "TradeRecord", "Analyzer", "ReportGenerator"]

@@ -36,6 +36,13 @@ MAX_DRAWDOWN_LIMIT = 0.15  # 15% drawdown triggers liquidation
 ATR_PERIOD = 14            # ATR lookback period
 ATR_STOP_MULTIPLIER = 2.0  # ATR multiplier for stop-loss distance
 
+# Strategy parameter presets (used by mean_reversion module)
+STRATEGY_PARAMS = {
+    "BollingerBands": {"period": 20, "num_std": 2.0},
+    "RSIStrategy": {"period": 14, "oversold": 30, "overbought": 70},
+    "PairTrading": {"lookback": 60, "entry_z": 2.0, "exit_z": 0.5},
+}
+
 # Output directories
 REPORT_DIR = "reports"
 LOG_DIR = "logs"
@@ -84,4 +91,5 @@ __all__ = [
     "COMMISSION",
     "SLIPPAGE",
     "BENCHMARK_SYMBOL",
+    "STRATEGY_PARAMS",
 ]

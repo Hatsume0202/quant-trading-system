@@ -1,14 +1,16 @@
-"""Strategy module with multiple trading strategies."""
+"""Strategy module for trading signal generation."""
 
 from .base import BaseStrategy, Strategy
-from .ma_cross import MACrossStrategy
-from .mean_reversion import MeanReversionStrategy
-from .momentum import MomentumStrategy
+from .trend_following import DualMACrossover, MACDStrategy, TurtleTrading
+from .mean_reversion import BollingerBands, RSIStrategy, PairTrading
 
 __all__ = [
     "BaseStrategy",
     "Strategy",
-    "MACrossStrategy",
-    "MeanReversionStrategy",
-    "MomentumStrategy",
+    "DualMACrossover",
+    "MACDStrategy",
+    "TurtleTrading",
+    "BollingerBands",
+    "RSIStrategy",
+    "PairTrading",
 ]

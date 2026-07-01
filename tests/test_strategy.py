@@ -122,15 +122,23 @@ class TestMomentumBreakoutStrategy:
         assert set(signals['Signal'].unique()).issubset({-1, 0, 1})
 
     def test_breakout_generates_buy(self):
+        """Price breaking above rolling high should generate buy signal."""
         dates = pd.date_range(start='2024-01-01', periods=60, freq='B')
         rng = np.random.default_rng(42)
-        prices = np.concatenate([
-            rng.uniform(90, 110, 30),
-            np.linspace(110, 130, 30),
-        ])
+        # Consolidation phase: close oscillates, high tracks close + small gap
+        consol_close = 100 + rng.uniform(-5, 5, 35)
+        consol_high = consol_close + rng.uniform(0, 3, 35)  # max ~108
+        consol_low = consol_close - rng.uniform(0, 3, 35)
+        # Breakout phase: close starts at 112, above all previous highs (max ~108)
+        breakout_close = np.linspace(112, 130, 25)
+        breakout_high = breakout_close * 1.005
+        breakout_low = breakout_close * 0.995
+        close = np.concatenate([consol_close, breakout_close])
+        high = np.concatenate([consol_high, breakout_high])
+        low = np.concatenate([consol_low, breakout_low])
         data = pd.DataFrame({
-            'Open': prices * 0.999, 'High': prices * 1.015,
-            'Low': prices * 0.985, 'Close': prices,
+            'Open': close * 0.999, 'High': high,
+            'Low': low, 'Close': close,
             'Volume': np.full(60, 50_000_000),
         }, index=dates)
         strategy = MomentumBreakoutStrategy(lookback=20, exit_lookback=10)
@@ -139,15 +147,23 @@ class TestMomentumBreakoutStrategy:
         assert len(buy_signals) > 0
 
     def test_breakdown_generates_sell(self):
+        """Price breaking below rolling low should generate sell signal."""
         dates = pd.date_range(start='2024-01-01', periods=60, freq='B')
         rng = np.random.default_rng(42)
-        prices = np.concatenate([
-            rng.uniform(90, 110, 30),
-            np.linspace(110, 80, 30),
-        ])
+        # Consolidation phase: close oscillates, low tracks close - small gap
+        consol_close = 100 + rng.uniform(-5, 5, 35)
+        consol_high = consol_close + rng.uniform(0, 3, 35)
+        consol_low = consol_close - rng.uniform(0, 3, 35)  # min ~92
+        # Breakdown phase: close starts at 88, below all previous lows (min ~92)
+        breakdown_close = np.linspace(88, 70, 25)
+        breakdown_high = breakdown_close * 1.005
+        breakdown_low = breakdown_close * 0.995
+        close = np.concatenate([consol_close, breakdown_close])
+        high = np.concatenate([consol_high, breakdown_high])
+        low = np.concatenate([consol_low, breakdown_low])
         data = pd.DataFrame({
-            'Open': prices * 0.999, 'High': prices * 1.015,
-            'Low': prices * 0.985, 'Close': prices,
+            'Open': close * 1.001, 'High': high,
+            'Low': low, 'Close': close,
             'Volume': np.full(60, 50_000_000),
         }, index=dates)
         strategy = MomentumBreakoutStrategy(lookback=20, exit_lookback=10)

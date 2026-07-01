@@ -91,7 +91,7 @@ class Broker:
         # Risk check
         if self.risk_manager is not None:
             current_equity = self.get_equity({symbol: price})
-            if not self.risk_manager.can_open_position(symbol, total_cost, current_equity, self.positions):
+            if self.risk_manager.check_drawdown_limit(current_equity):
                 return None
 
         # Cash check - buy as many as we can afford

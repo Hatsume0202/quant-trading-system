@@ -1,143 +1,297 @@
-"""Backtest engine - event-driven loop over historical data."""
+"""Backtest engine for simulating trading strategies."""
 
 import logging
-import pandas as pd
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 import numpy as np
-from typing import Optional
+import pandas as pd
 
-from config.settings import Config, config as default_config
+from config import INITIAL_CAPITAL, COMMISSION, SLIPPAGE
 
 logger = logging.getLogger(__name__)
 
 
-class BacktestEngine:
-    """Main backtesting engine.
+@dataclass
+class Trade:
+    """Record of a single trade execution."""
+    timestamp: pd.Timestamp
+    symbol: str
+    direction: str  # 'buy' or 'sell'
+    price: float
+    shares: int
+    cost: float  # Including commission + slippage
+    pnl: float = 0.0  # Realized P&L (filled on sell)
 
-    Iterates through historical bars, generates strategy signals,
-    executes orders through a simulated broker, and tracks equity.
+
+@dataclass
+class BacktestResult:
+    """Complete results from a backtest run."""
+    equity_curve: pd.Series        # Portfolio value over time
+    trades: List[Trade]             # All executed trades
+    positions: pd.DataFrame         # Holdings over time
+    cash_curve: pd.Series           # Cash balance over time
+    final_value: float              # Final portfolio value
+    total_return: float             # Total return as fraction
+    strategy_name: str = ""
+    symbol: str = ""
+
+
+class BacktestEngine:
+    """Vectorized backtest engine with transaction cost simulation.
+
+    Simulates trading with:
+    - Commission: percentage of trade value
+    - Slippage: adverse price movement on execution
+    - Position tracking across multiple symbols
+    - Trade logging for later analysis
     """
 
-    def __init__(self, config: Optional[Config] = None):
-        self.config = config or default_config
+    def __init__(
+        self,
+        initial_capital: float = INITIAL_CAPITAL,
+        commission: float = COMMISSION,
+        slippage: float = SLIPPAGE,
+    ):
+        """Initialize backtest engine.
+
+        Args:
+            initial_capital: Starting portfolio value.
+            commission: Commission rate per trade (e.g., 0.0003 = 0.03%).
+            slippage: Slippage rate per trade (e.g., 0.0001 = 0.01%).
+        """
+        self.initial_capital = initial_capital
+        self.commission = commission
+        self.slippage = slippage
+        logger.info(
+            f"BacktestEngine: capital=${initial_capital:,.0f}, "
+            f"commission={commission:.3%}, slippage={slippage:.3%}"
+        )
 
     def run(
         self,
-        data: pd.DataFrame,
-        strategy,
-        symbol: str = "STOCK",
-        risk_manager=None,
-    ) -> dict:
-        """Run backtest for a single stock.
+        signals: pd.DataFrame,
+        prices: pd.DataFrame,
+        initial_capital: Optional[float] = None,
+        strategy_name: str = "",
+        symbol: str = "",
+    ) -> BacktestResult:
+        """Run backtest with given signals and prices.
 
         Args:
-            data: OHLCV DataFrame with indicator columns.
-            strategy: Strategy instance with generate_signals().
-            symbol: Ticker symbol.
-            risk_manager: Optional RiskManager instance.
+            signals: DataFrame with 'signal' column (1=buy, -1=sell, 0=hold).
+                     May also have 'stop_loss' column for exit stops.
+            prices: DataFrame with at least 'close' column for execution prices.
+            initial_capital: Override default initial capital.
+            strategy_name: Name of strategy being tested.
+            symbol: Symbol being traded.
 
         Returns:
-            dict with keys: trades, equity_curve, benchmark_curve,
-                            returns, config, symbol, signals.
+            BacktestResult with equity curve, trades, and final metrics.
         """
-        from .broker import Broker
+        capital = initial_capital or self.initial_capital
 
-        broker = Broker(self.config, risk_manager=risk_manager)
-        signals = strategy.generate_signals(data)
+        # Align signals and prices
+        common_idx = signals.index.intersection(prices.index)
+        signals = signals.loc[common_idx]
+        prices = prices.loc[common_idx]
 
-        initial_price = data["close"].iloc[0]
-        benchmark_shares = int(self.config.INITIAL_CAPITAL / initial_price)
+        n = len(common_idx)
+        cash = capital
+        shares = 0
+        equity = np.zeros(n)
+        cash_series = np.zeros(n)
+        position_series = np.zeros(n)
+        trades: List[Trade] = []
 
-        equity_curve = []
-        benchmark_curve = []
-        dates = []
+        entry_price = 0.0
+        stop_loss = None
 
-        for i, (idx, row) in enumerate(data.iterrows()):
-            price = row["close"]
-            signal = int(signals.iloc[i]) if i < len(signals) else 0
+        for i in range(n):
+            date = common_idx[i]
+            price = prices['close'].iloc[i]
+            signal = signals['signal'].iloc[i]
 
-            # Risk manager checks
-            position = broker.positions.get(symbol, 0)
-            if risk_manager is not None and position > 0:
-                if risk_manager.check_stop_loss(symbol, price, position):
-                    broker.execute_sell(symbol, idx, price)
-                elif risk_manager.check_take_profit(symbol, price, position):
-                    broker.execute_sell(symbol, idx, price)
+            # Check stop loss on existing position
+            if shares > 0 and 'stop_loss' in signals.columns:
+                sl = signals['stop_loss'].iloc[i]
+                if not np.isnan(sl) and price <= sl:
+                    # Stop loss hit - force sell
+                    signal = -1
 
-            # Execute signals
-            if signal == 1:
-                if broker.positions.get(symbol, 0) > 0:
-                    broker.execute_sell(symbol, idx, price)
-                current_equity = broker.get_equity({symbol: price})
-                max_position_val = self.config.MAX_POSITION_SIZE * current_equity
-                invest_amount = min(broker.cash, max_position_val)
-                if invest_amount > 0:
-                    broker.execute_buy(symbol, idx, price, amount=invest_amount)
-            elif signal == -1:
-                broker.execute_sell(symbol, idx, price)
+            # Execute trades
+            if signal == 1 and shares == 0:
+                # Buy
+                exec_price = price * (1 + self.slippage)
+                max_shares = int(cash * 0.20 / exec_price)  # 20% max position
+                shares = max(1, max_shares)
+                cost = exec_price * shares * (1 + self.commission)
 
-            equity = broker.get_equity({symbol: price})
-            benchmark = benchmark_shares * price
+                if cost <= cash:
+                    cash -= cost
+                    entry_price = exec_price
 
-            equity_curve.append(equity)
-            benchmark_curve.append(benchmark)
-            dates.append(idx)
+                    if 'stop_loss' in signals.columns:
+                        stop_loss = signals['stop_loss'].iloc[i]
 
-        equity_s = pd.Series(equity_curve, index=dates, name="equity")
-        benchmark_s = pd.Series(benchmark_curve, index=dates, name="benchmark")
-        returns_s = equity_s.pct_change().fillna(0)
+                    trades.append(Trade(
+                        timestamp=date, symbol=symbol, direction='buy',
+                        price=exec_price, shares=shares, cost=cost
+                    ))
+                    logger.debug(f"BUY  {date.date()}: {shares} @ ${exec_price:.2f}")
+                else:
+                    shares = 0
 
-        # Convert TradeRecord objects to dicts
-        trades = []
-        for t in broker.trades:
-            shares = t.shares
-            entry_price = t.price
-            # Calculate P&L: for sells, compare to avg cost
-            trades.append({
-                "date": t.date,
-                "symbol": t.symbol,
-                "action": t.action,
-                "price": t.price,
-                "shares": t.shares,
-                "commission": t.commission,
-                "slippage": t.slippage_cost,
-                "stamp_duty": t.stamp_duty,
-                "cash_flow": t.cash_flow,
-            })
+            elif signal == -1 and shares > 0:
+                # Sell
+                exec_price = price * (1 - self.slippage)
+                proceeds = exec_price * shares * (1 - self.commission)
+                pnl = proceeds - (entry_price * shares * (1 + self.commission))
+                cash += proceeds
 
-        # Enrich trades with profit_loss by matching buy/sell pairs
-        trades = self._calculate_trade_pnl(trades)
+                trades.append(Trade(
+                    timestamp=date, symbol=symbol, direction='sell',
+                    price=exec_price, shares=shares, cost=proceeds, pnl=pnl
+                ))
+                logger.debug(f"SELL {date.date()}: {shares} @ ${exec_price:.2f}, PnL=${pnl:,.2f}")
+                shares = 0
+                entry_price = 0.0
+                stop_loss = None
 
-        return {
-            "trades": trades,
-            "equity_curve": equity_s,
-            "benchmark_curve": benchmark_s,
-            "returns": returns_s,
-            "config": self.config,
-            "symbol": symbol,
-            "signals": signals,
-        }
+            # Calculate equity
+            position_value = shares * price
+            equity[i] = cash + position_value
+            cash_series[i] = cash
+            position_series[i] = position_value
 
-    def _calculate_trade_pnl(self, trades: list) -> list:
-        """Calculate profit/loss by matching buy/sell pairs."""
-        result = []
-        buys = []
-        for t in trades:
-            t_copy = dict(t)
-            t_copy["profit_loss"] = 0.0
-            if t["action"] == "buy":
-                buys.append(t_copy)
-            elif t["action"] == "sell":
-                if buys:
-                    buy = buys.pop(0)
-                    buy_cost = buy["price"] * buy["shares"]
-                    sell_proceeds = t["price"] * t["shares"]
-                    pnl = sell_proceeds - buy_cost - t["commission"] - t["stamp_duty"] - buy["commission"]
-                    # Assign P&L proportionally
-                    t_copy["profit_loss"] = pnl
-                    t_copy["entry_price"] = buy["price"]
-                    t_copy["entry_date"] = buy["date"]
-                result.append(t_copy)
-        # Remaining buys (unclosed positions)
-        for b in buys:
-            result.append(b)
-        return result
+        # Close any remaining position at last price
+        if shares > 0:
+            final_price = prices['close'].iloc[-1] * (1 - self.slippage)
+            proceeds = final_price * shares * (1 - self.commission)
+            pnl = proceeds - (entry_price * shares * (1 + self.commission))
+            cash += proceeds
+            equity[-1] = cash
+            trades.append(Trade(
+                timestamp=common_idx[-1], symbol=symbol, direction='sell',
+                price=final_price, shares=shares, cost=proceeds, pnl=pnl
+            ))
+
+        equity_series = pd.Series(equity, index=common_idx, name='equity')
+        cash_series_s = pd.Series(cash_series, index=common_idx, name='cash')
+        positions_s = pd.Series(position_series, index=common_idx, name='positions')
+
+        total_return = (equity[-1] / capital) - 1.0
+
+        return BacktestResult(
+            equity_curve=equity_series,
+            trades=trades,
+            positions=pd.DataFrame({'position': positions_s, 'cash': cash_series_s}),
+            cash_curve=cash_series_s,
+            final_value=equity[-1],
+            total_return=total_return,
+            strategy_name=strategy_name,
+            symbol=symbol,
+        )
+
+    def run_portfolio(
+        self,
+        all_signals: Dict[str, pd.DataFrame],
+        all_prices: Dict[str, pd.DataFrame],
+        initial_capital: Optional[float] = None,
+        strategy_name: str = "",
+    ) -> BacktestResult:
+        """Run multi-stock portfolio backtest.
+
+        Args:
+            all_signals: Dict mapping symbol to signal DataFrame.
+            all_prices: Dict mapping symbol to price DataFrame.
+            initial_capital: Starting capital.
+            strategy_name: Strategy name for reporting.
+
+        Returns:
+            Combined BacktestResult.
+        """
+        capital = initial_capital or self.initial_capital
+        symbols = list(all_prices.keys())
+        n_symbols = len(symbols)
+
+        # Find common date range
+        all_dates = all_prices[symbols[0]].index
+        for sym in symbols[1:]:
+            all_dates = all_dates.intersection(all_prices[sym].index)
+
+        all_dates = all_dates.sort_values()
+        n = len(all_dates)
+
+        cash = capital
+        holdings: Dict[str, int] = {s: 0 for s in symbols}
+        entry_prices: Dict[str, float] = {s: 0.0 for s in symbols}
+
+        equity = np.zeros(n)
+        all_trades: List[Trade] = []
+        capital_per_stock = capital / n_symbols
+
+        for i, date in enumerate(all_dates):
+            for sym in symbols:
+                if date not in all_prices[sym].index:
+                    continue
+
+                price = all_prices[sym]['close'].loc[date]
+
+                if sym in all_signals and date in all_signals[sym].index:
+                    signal = all_signals[sym]['signal'].loc[date]
+                else:
+                    signal = 0
+
+                if signal == 1 and holdings[sym] == 0:
+                    exec_price = price * (1 + self.slippage)
+                    alloc = min(cash * 0.20, capital_per_stock)
+                    max_shares = int(alloc / exec_price)
+                    shares = max(1, max_shares) if max_shares > 0 else 0
+                    cost = exec_price * shares * (1 + self.commission)
+
+                    if cost <= cash and shares > 0:
+                        cash -= cost
+                        holdings[sym] = shares
+                        entry_prices[sym] = exec_price
+                        all_trades.append(Trade(
+                            timestamp=date, symbol=sym, direction='buy',
+                            price=exec_price, shares=shares, cost=cost
+                        ))
+
+                elif signal == -1 and holdings[sym] > 0:
+                    exec_price = price * (1 - self.slippage)
+                    proceeds = exec_price * holdings[sym] * (1 - self.commission)
+                    pnl = proceeds - (entry_prices[sym] * holdings[sym] * (1 + self.commission))
+                    cash += proceeds
+                    all_trades.append(Trade(
+                        timestamp=date, symbol=sym, direction='sell',
+                        price=exec_price, shares=holdings[sym], cost=proceeds, pnl=pnl
+                    ))
+                    holdings[sym] = 0
+                    entry_prices[sym] = 0.0
+
+            position_value = sum(
+                holdings[s] * (all_prices[s]['close'].loc[date] if date in all_prices[s].index else 0)
+                for s in symbols
+            )
+            equity[i] = cash + position_value
+
+        # Close remaining positions
+        for sym in symbols:
+            if holdings[sym] > 0 and not all_prices[sym].empty:
+                final_price = all_prices[sym]['close'].iloc[-1] * (1 - self.slippage)
+                cash += final_price * holdings[sym] * (1 - self.commission)
+
+        equity_series = pd.Series(equity, index=all_dates)
+        total_return = (equity[-1] / capital) - 1.0 if n > 0 else 0.0
+
+        return BacktestResult(
+            equity_curve=equity_series,
+            trades=all_trades,
+            positions=pd.DataFrame(index=all_dates),
+            cash_curve=pd.Series(cash, index=all_dates),
+            final_value=equity[-1] if n > 0 else capital,
+            total_return=total_return,
+            strategy_name=strategy_name,
+            symbol=",".join(symbols),
+        )
